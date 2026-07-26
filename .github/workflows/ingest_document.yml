@@ -1,0 +1,64 @@
+name: Ingest Document
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_type:
+        description: 'Source type: "url" or "file"'
+        required: true
+        type: choice
+        options:
+          - url
+          - file
+      source_value:
+        description: 'URL to scrape, or path to file already in uploaded_docs/'
+        required: true
+        type: string
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+      - name: Ingest document
+        run: |
+          if [ "${{ inputs.source_type }}" = "url" ]; then
+            python scripts/ingest_source.py --url "${{ inputs.source_value }}"
+          else
+            python scripts/ingest_source.py --file "${{ inputs.source_value }}"
+          fi
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+      - name: Commit and push changes
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add data/ uploaded_docs/
+          git diff --cached --quiet || git commit -m "📄 Ingest: ${{ inputs.source_value }}"
+          git push
+
+      - name: Log completion
+        run: |
+          echo "✅ Document ingestion completed"
+          echo "Source: ${{ inputs.source_type }} — ${{ inputs.source_value }}"
+          echo "Timestamp: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
