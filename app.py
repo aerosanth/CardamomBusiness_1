@@ -8,6 +8,13 @@ Multi-tab app:
   Tab 3 — About       : App info, tech stack, update status
 """
 
+try:
+    __import__('pysqlite3')
+    import sys
+    sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+except ImportError:
+    pass
+
 import streamlit as st
 
 # ── Page config (must be first Streamlit call) ──

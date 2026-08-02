@@ -1,0 +1,8 @@
+Update price scraper for 
+Look at the latest date available in the source website 1st page of the table, oldest date available in source website last page of the table. Just read first and last pages of the table.
+Find the latest date and oldest date available in cardamom_data.db.
+First find the table page number where the oldest data is available from that page read rest of the table pages one by one till the last page of the table , then scrape and update the data base.
+Then find the table page where the latest date in the db in available, then scrape the data from that page to 1st page update the db
+No do upload duplicate rows in the db.
+
+Then run the code to update the db

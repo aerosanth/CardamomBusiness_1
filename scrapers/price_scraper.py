@@ -36,15 +36,21 @@ PAGES_TO_SCRAPE = "all"
 # Polite delay between HTTP requests (seconds)
 REQUEST_DELAY = 2
 
-# ── Logging ──
+import sys
+if _PROJECT_ROOT not in sys.path:
+    sys.path.append(_PROJECT_ROOT)
+
+from modules.logger import get_app_logger
+scraper_logger = get_app_logger("price_scraper")
 
 def _log(message: str, level: str = "INFO") -> None:
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    line = "[%s] [%s] %s" % (ts, level, message)
-    try:
-        print(line, flush=True)
-    except UnicodeEncodeError:
-        print(line.encode('ascii', 'replace').decode('ascii'), flush=True)
+    level = level.upper()
+    if level == "WARN":
+        scraper_logger.warning(message)
+    elif level == "ERROR":
+        scraper_logger.error(message)
+    else:
+        scraper_logger.info(message)
 
 
 # ── Database helpers ──
@@ -75,17 +81,17 @@ def has_existing_data(db_path: Optional[str] = None) -> bool:
         return False
 
 
-def get_last_scraped_date() -> Optional[str]:
-    """Return the most recent auction date in the DB (YYYY-MM-DD) or None."""
+def get_db_dates() -> tuple[Optional[str], Optional[str]]:
+    """Return the (oldest_date, latest_date) in the DB (YYYY-MM-DD) or (None, None)."""
     try:
         conn = _get_conn()
         cur = conn.cursor()
-        cur.execute("SELECT MAX(date_of_auction) FROM cardamom_prices")
-        result = cur.fetchone()[0]
+        cur.execute("SELECT MIN(date_of_auction), MAX(date_of_auction) FROM cardamom_prices")
+        row = cur.fetchone()
         conn.close()
-        return result
+        return (row[0], row[1]) if row else (None, None)
     except Exception:
-        return None
+        return None, None
 
 
 def get_last_update_check() -> Optional[str]:
@@ -162,13 +168,19 @@ def scrape_page(page_num: int = 1) -> Optional[pd.DataFrame]:
     Returns a raw DataFrame or None when no data is found / on error.
     """
     url = f"{_BASE_URL}?page={page_num}"
-    try:
-        _log(f"Scraping page {page_num} …")
-        resp = requests.get(url, headers=_HEADERS, timeout=30, verify=False)
-        resp.raise_for_status()
-    except requests.RequestException as exc:
-        _log(f"HTTP error on page {page_num}: {exc}", "ERROR")
-        return None
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            _log(f"Scraping page {page_num} (Attempt {attempt + 1}/{max_retries}) …")
+            resp = requests.get(url, headers=_HEADERS, timeout=30, verify=False)
+            resp.raise_for_status()
+            break # Success, exit retry loop
+        except requests.RequestException as exc:
+            _log(f"HTTP error on page {page_num} (Attempt {attempt + 1}): {exc}", "WARN")
+            if attempt == max_retries - 1:
+                _log(f"Failed to scrape page {page_num} after {max_retries} attempts.", "ERROR")
+                return None
+            time.sleep(REQUEST_DELAY * 2) # Wait longer before retrying
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
@@ -209,6 +221,55 @@ def scrape_page(page_num: int = 1) -> Optional[pd.DataFrame]:
 
     _log(f"No auction table found on page {page_num}", "WARN")
     return None
+
+import re
+
+def get_last_page_number(soup: BeautifulSoup) -> int:
+    links = soup.find_all('a', href=True)
+    max_page = 1
+    for a in links:
+        m = re.search(r'page=(\d+)', a['href'])
+        if m:
+            page = int(m.group(1))
+            if page > max_page:
+                max_page = page
+    return max_page
+
+def find_page_for_date(target_date: str, last_page: int) -> int:
+    """Uses binary search to find the page number containing the target date."""
+    if not target_date:
+        return 1
+    low = 1
+    high = last_page
+    
+    while low <= high:
+        mid = (low + high) // 2
+        df = scrape_page(mid)
+        if df is None or df.empty:
+            high = mid - 1
+            continue
+            
+        cleaned = _clean(df.copy())
+        if cleaned.empty:
+            high = mid - 1
+            continue
+            
+        page_dates = cleaned['date_of_auction'].dropna().tolist()
+        if not page_dates:
+            high = mid - 1
+            continue
+            
+        page_max_date = max(page_dates)
+        page_min_date = min(page_dates)
+        
+        if target_date > page_max_date:
+            high = mid - 1
+        elif target_date < page_min_date:
+            low = mid + 1
+        else:
+            return mid
+            
+    return min(max(1, low), last_page)
 
 
 def _clean(df: pd.DataFrame) -> pd.DataFrame:
@@ -366,7 +427,7 @@ def run_incremental_scrape() -> bool:
 
     _ensure_db()
 
-    last_date = get_last_scraped_date()
+    _, last_date = get_db_dates()
     _log(f"Last date in DB: {last_date}")
 
     max_pg = (
@@ -382,18 +443,79 @@ def run_incremental_scrape() -> bool:
 
 
 def auto_scrape() -> bool:
-    """Smart entry point: full scrape if DB is empty, else incremental."""
+    """Smart entry point: full scrape if DB is empty, else smart update."""
     _ensure_db()
-    if not has_existing_data():
+    
+    db_oldest_date, db_latest_date = get_db_dates()
+    _log(f"DB Oldest Date: {db_oldest_date}, DB Latest Date: {db_latest_date}")
+    
+    _log("Fetching page 1 to find latest web date and last page number...")
+    url = f"{_BASE_URL}?page=1"
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(url, headers=_HEADERS, timeout=30, verify=False)
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "html.parser")
+            last_page = get_last_page_number(soup)
+            break
+        except Exception as exc:
+            _log(f"Failed to fetch page 1 metadata (Attempt {attempt + 1}): {exc}", "WARN")
+            if attempt == max_retries - 1:
+                _log("Failed to fetch page 1 metadata after all attempts.", "ERROR")
+                return False
+            time.sleep(REQUEST_DELAY * 2)
+        
+    df_1 = scrape_page(1)
+    if df_1 is not None and not df_1.empty:
+        cleaned_1 = _clean(df_1.copy())
+        web_latest_date = cleaned_1['date_of_auction'].max() if not cleaned_1.empty else None
+    else:
+        web_latest_date = None
+        
+    _log(f"Fetching last page ({last_page}) to find oldest web date...")
+    df_last = scrape_page(last_page)
+    if df_last is not None and not df_last.empty:
+        cleaned_last = _clean(df_last.copy())
+        web_oldest_date = cleaned_last['date_of_auction'].min() if not cleaned_last.empty else None
+    else:
+        web_oldest_date = None
+        
+    _log(f"Web Latest Date: {web_latest_date}, Web Oldest Date: {web_oldest_date}, Last Page: {last_page}")
+    
+    if not db_oldest_date or not db_latest_date:
+        _log("DB is empty. Running full scrape.")
         return run_full_scrape()
 
-    today = datetime.now().strftime("%Y-%m-%d")
-    last_check = get_last_update_check()
-    if last_check == today:
-        _log("Already checked today — skipping.")
-        return True
-
-    return run_incremental_scrape()
+    # 1. Backfill (oldest db to last page)
+    _log(f"Finding page for DB oldest date: {db_oldest_date}")
+    page_for_oldest = find_page_for_date(db_oldest_date, last_page)
+    _log(f"DB oldest date found around page {page_for_oldest}. Scraping from {page_for_oldest} to {last_page}")
+    
+    for p in range(page_for_oldest, last_page + 1):
+        df = scrape_page(p)
+        if df is not None and not df.empty:
+            cleaned = _clean(df.copy())
+            if not cleaned.empty:
+                _save(cleaned)
+        time.sleep(REQUEST_DELAY)
+        
+    # 2. Forward fill (latest db to page 1)
+    _log(f"Finding page for DB latest date: {db_latest_date}")
+    page_for_latest = find_page_for_date(db_latest_date, last_page)
+    _log(f"DB latest date found around page {page_for_latest}. Scraping from {page_for_latest} down to 1")
+    
+    for p in range(page_for_latest, 0, -1):
+        df = scrape_page(p)
+        if df is not None and not df.empty:
+            cleaned = _clean(df.copy())
+            if not cleaned.empty:
+                _save(cleaned)
+        time.sleep(REQUEST_DELAY)
+        
+    _set_last_update_check(datetime.now().strftime("%Y-%m-%d"))
+    _log("Smart update complete.")
+    return True
 
 
 # ── CLI ──

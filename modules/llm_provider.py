@@ -18,7 +18,7 @@ Embedding:
 Environment / secrets expected:
   GEMINI_API_KEY          — required for Gemini LLM & embeddings
   OPENAI_API_KEY          — required if using OpenAI models
-  NVIDIA_NIM_API_KEY      — required if using Nvidia NIM models
+  NVIDIA_API_KEY          — required if using Nvidia  models
   LLM_MODEL               — model string (default: gemini/gemini-2.0-flash)
   EMBEDDING_MODEL         — embedding model (default: models/text-embedding-004)
 """
@@ -43,7 +43,8 @@ def _secret(key: str, default: str = "") -> str:
 
 
 def get_llm_model() -> str:
-    return _secret("LLM_MODEL", "gemini/gemini-2.0-flash")
+    # return _secret("LLM_MODEL", "gemini/gemini-2.0-flash")
+    return _secret("LLM_MODEL", "nvidia_nim/meta/llama-3.1-70b-instruct")
 
 
 def get_embedding_model() -> str:
@@ -55,7 +56,7 @@ def _set_api_keys() -> None:
     mappings = {
         "GEMINI_API_KEY": "GEMINI_API_KEY",
         "OPENAI_API_KEY": "OPENAI_API_KEY",
-        "NVIDIA_NIM_API_KEY": "NVIDIA_NIM_API_KEY",
+        "NVIDIA_API_KEY": "NVIDIA_NIM_API_KEY",
     }
     for secret_key, env_key in mappings.items():
         val = _secret(secret_key)
@@ -109,7 +110,7 @@ def chat(
 
 def chat_stream(
     messages: List[Dict[str, str]],
-    temperature: float = 0.3,
+    temperature: float = 0.1,
     max_tokens: int = 4096,
     model: Optional[str] = None,
 ):

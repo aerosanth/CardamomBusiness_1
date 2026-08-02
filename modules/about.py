@@ -85,7 +85,7 @@ def render_about() -> None:
 
     try:
         from scrapers.price_scraper import (
-            get_last_scraped_date,
+            get_db_dates,
             get_last_update_check,
             get_record_count,
         )
@@ -96,7 +96,8 @@ def render_about() -> None:
         with col1:
             st.metric("Price Records", f"{get_record_count():,}")
         with col2:
-            st.metric("Latest Auction Date", get_last_scraped_date() or "N/A")
+            _, latest_date = get_db_dates()
+            st.metric("Latest Auction Date", latest_date or "N/A")
         with col3:
             st.metric("Last Update Check", get_last_update_check() or "Never")
         with col4:
