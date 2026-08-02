@@ -44,7 +44,7 @@ jobs:
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-          git add data/cardamom_data.db
+          git add data/cardamom_data.db logs/
           git diff --cached --quiet || git commit -m "📊 Daily update: $(date -u +'%Y-%m-%d %H:%M UTC')"
           git push
 
